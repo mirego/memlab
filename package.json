@@ -33,7 +33,9 @@
   },
   "scripts": {
     "dev": "tsc -b -w",
+    "prebuild": "npm install",
     "build": "npm run clean && npm run build-pkg --workspaces",
+    "prepare": "npm run build", 
     "pub": "npm run publish-patch --workspaces",
     "clean": "npm run clean-pkg --workspaces && rm -rf ./website/build",
     "memlab": "node packages/cli/dist/runner.js",
@@ -52,5 +54,8 @@
     "./packages/api",
     "./packages/cli",
     "./packages/memlab"
-  ]
+  ],
+  "bin": {
+    "memlab": "./packages/cli/bin/memlab.js"
+  }
 }
