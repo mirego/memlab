@@ -33,7 +33,6 @@
   },
   "scripts": {
     "dev": "tsc -b -w",
-    "prebuild": "npm install",
     "build": "npm run clean && npm run build-pkg --workspaces",
     "prepare": "npm run build", 
     "pub": "npm run publish-patch --workspaces",
