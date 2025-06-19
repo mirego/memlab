@@ -34,7 +34,7 @@
   "scripts": {
     "dev": "tsc -b -w",
     "build": "npm run clean && npm run build-pkg --workspaces",
-    "prepare": "npm run build", 
+    "prepare": "npm install && npm run build", 
     "pub": "npm run publish-patch --workspaces",
     "clean": "npm run clean-pkg --workspaces && rm -rf ./website/build",
     "memlab": "node packages/cli/dist/runner.js",
