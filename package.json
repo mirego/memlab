@@ -52,8 +52,5 @@
     "./packages/api",
     "./packages/cli",
     "./packages/memlab"
-  ],
-  "bin": {
-    "memlab": "./packages/cli/bin/memlab.js"
-  }
+  ]
 }
