@@ -1,0 +1,18 @@
+/**
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ *
+ * @format
+ * @oncall memory_lab
+ */
+import type { CLIOptions } from '@memlab/core';
+import BaseCommand from '../../BaseCommand';
+export default class CheckXvfbSupportCommand extends BaseCommand {
+    getCommandName(): string;
+    getDescription(): string;
+    isInternalCommand(): boolean;
+    run(_options: CLIOptions): Promise<void>;
+}
+//# sourceMappingURL=CheckXvfbSupportCommand.d.ts.map

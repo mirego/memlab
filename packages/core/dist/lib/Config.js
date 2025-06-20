@@ -1,0 +1,634 @@
+"use strict";
+/**
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ *
+ * @format
+ * @oncall memory_lab
+ */
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || function (mod) {
+    if (mod && mod.__esModule) return mod;
+    var result = {};
+    if (mod != null) for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result, mod, k);
+    __setModuleDefault(result, mod);
+    return result;
+};
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.MemLabConfig = exports.ErrorHandling = exports.OutputFormat = exports.TraceObjectMode = void 0;
+const os_1 = __importDefault(require("os"));
+const path_1 = __importDefault(require("path"));
+const RunningModes_1 = __importDefault(require("../modes/RunningModes"));
+const Console_1 = __importDefault(require("./Console"));
+const Constant_1 = __importDefault(require("./Constant"));
+const FileManager_1 = __importStar(require("./FileManager"));
+const InternalValueSetter_1 = require("./InternalValueSetter");
+const devices = Constant_1.default.isFRL
+    ? {}
+    : Constant_1.default.isFB
+        ? require('puppeteer-core/DeviceDescriptors')
+        : // eslint-disable-next-line @typescript-eslint/no-var-requires
+            require('puppeteer').KnownDevices;
+// default viewport config for desktop
+const windowWidth = 1680;
+const windowHeight = 1080;
+const defaultViewport = {
+    width: windowWidth,
+    height: windowHeight,
+    deviceScaleFactor: 1,
+};
+/** @internal */
+var TraceObjectMode;
+(function (TraceObjectMode) {
+    TraceObjectMode[TraceObjectMode["Default"] = 1] = "Default";
+    TraceObjectMode[TraceObjectMode["SelectedJSObjects"] = 2] = "SelectedJSObjects";
+})(TraceObjectMode = exports.TraceObjectMode || (exports.TraceObjectMode = {}));
+/** @internal */
+var OutputFormat;
+(function (OutputFormat) {
+    OutputFormat[OutputFormat["Text"] = 1] = "Text";
+    OutputFormat[OutputFormat["Json"] = 2] = "Json";
+})(OutputFormat = exports.OutputFormat || (exports.OutputFormat = {}));
+/** @internal */
+var ErrorHandling;
+(function (ErrorHandling) {
+    ErrorHandling[ErrorHandling["Halt"] = 1] = "Halt";
+    ErrorHandling[ErrorHandling["Throw"] = 2] = "Throw";
+})(ErrorHandling = exports.ErrorHandling || (exports.ErrorHandling = {}));
+/** @internal */
+class MemLabConfig {
+    constructor(options = {}) {
+        // init properties, they can be configured manually
+        this.init(options);
+        // init built-in properties, they should not be configured manually
+        this.initInternalConfigs();
+    }
+    initInternalConfigs() {
+        // DO NOT SET PARAMETER HERE
+        this._isFullRun = false;
+        this._reportLeaksInTimers = true;
+        this._deviceManualOverridden = false;
+        this._timerNodes = ['Pending activities'];
+        this._timerEdges = [];
+        this._isHeadfulBrowser = false;
+        this._disableWebSecurity = false;
+        this.targetApp = Constant_1.default.unset;
+        this.targetTab = Constant_1.default.unset;
+        this.analysisMode = Constant_1.default.unset;
+        this.focusFiberNodeId = -1;
+        this.isFB = Constant_1.default.isFB;
+        this._chromeUserDataDir = os_1.default.tmpdir();
+        // assuming the Evn doesn't support Xvfb before checking
+        this.machineSupportsXVFB = false;
+        // by default we want to use Xvfb if the Env supports it
+        this.useXVFB = true;
+        this.specifiedEngine = false;
+        // set by the heap-analysis package if HeapConfig is used
+        this.heapConfig = null;
+        // set puppeteer configuration
+        this.puppeteerConfig = {
+            headless: !this._isHeadfulBrowser,
+            devtools: this.openDevtoolsConsole,
+            protocolTimeout: Constant_1.default.defaultProtocolTimeout,
+            // IMPORTANT: test ContinuousTest before change this config
+            ignoreHTTPSErrors: true,
+            // Support running on Windows
+            ignoreDefaultArgs: [
+                '--disable-extensions',
+                '--disable-component-update',
+            ],
+            userDataDir: this._chromeUserDataDir,
+            // Chromium in ContinuousTest needs this args
+            args: [
+                '--no-sandbox',
+                // Disable popup notification
+                '--disable-notifications',
+                // Automatically allows media stream requests
+                '--use-fake-ui-for-media-stream',
+                // Feeds fake video stream
+                '--use-fake-device-for-media-stream',
+                // V8 GC move fewer objects around
+                '--js-flags="--no-move-object-start"',
+                // Alreay on by default, just want to make sure
+                '--enable-precise-memory-info',
+                // sites using WebGL (three.js) will fail
+                // in headless mode without WebGL
+                '--enable-webgl',
+                'browser-test',
+            ],
+            defaultViewport,
+        };
+        // by default don't emulate any device, use the desktop config
+        this.emulateDevice = null;
+        // the default JS engine of snapshot
+        this.jsEngine = Constant_1.default.defaultEngine;
+        // the default browser (Chromium)
+        this._browser = 'chrome';
+        // a list of package information
+        this.packageInfo = [];
+        // a set of additional GKs to be enabled
+        this.addEnableGK = new Set();
+        // a set of additional GKs to be disabled
+        this.addDisableGK = new Set();
+        // a list of additional QEs to be enabled
+        this.qes = [];
+        // check if running in ondemand devvm
+        this.isOndemand = false;
+        // configuration for analyzing external snapshots
+        this.useExternalSnapshot = false;
+        // new version of heap snapshot has a detachedness field
+        this.snapshotHasDetachedness = false;
+        // by default running in regular mode
+        this.runningMode = RunningModes_1.default.get('regular', this);
+        // intercept and log JavaScript Code in browser
+        this.interceptScript = false;
+        // rewrite JavaScript Code in browser
+        this.instrumentJS = false;
+        // external heap snapshot paths, if enabled
+        this.externalSnapshotFilePaths = [];
+        // mute the console output, if enabled
+        this.muteConsole = false;
+        // log all leak traces, each as an unclassified cluster
+        this.logUnclassifiedClusters = false;
+        // If true, the detailed JSON file of each representative
+        // trace (for visualization) will include detailed object
+        // info for each Fiber node on the return chain.
+        // This may bloat the trace size from 100KB to 50MB.
+        this.includeObjectInfoInTraceReturnChain = false;
+        // by default halt the program when utils.haltOrThrow is calleds
+        this.errorHandling = ErrorHandling.Halt;
+        // by default use clustering based on heurastics
+        this.isMLClustering = false;
+        // linkage max distance for caclulating distances among clusters
+        this.mlClusteringLinkageMaxDistance = 0.7;
+        // TF/IDF maximum document frequency
+        this.mlMaxDF = 1;
+        // if true, evaluating results with sequential clustering
+        this.isSequentialClustering = false;
+        // if true, evaluating results with sequential
+        // clustering with multiple iterations
+        this.isMultiIterationSeqClustering = false;
+        // split the sample leak traces into 4 smaller ones by default.
+        this.seqClusteringSplitCount = 4;
+        // the number of iterations for multi-iteration sequential clustering
+        this.multiIterSeqClusteringIteration = 1;
+        // the number of trace samples to retain from each cluster
+        this.multiIterSeqClusteringSampleSize = Infinity;
+        // if true, split dataset into trunks
+        // with random order for sequential clustering
+        this.seqClusteringIsRandomChunks = false;
+        // maximum number of samples as input for leak trace clustering
+        this.maxSamplesForClustering = 5000;
+        // extra E2E run info (other than the fields defined in
+        // RunMetaInfo like app, interaction, browserInfo).
+        // Information saved in this map will be
+        // auto-serialized to run-meta.json when the file is saved
+        // and auto-deserialized from run-meta.json when the file is loaded
+        this.extraRunInfoMap = new Map();
+        // if specified via CLI options, this will filter leak traces by
+        // node and edge names in the leak trace
+        this.filterTraceByName = null;
+        // if true, memlab will not wait for the browser to close successfully
+        this.skipBrowserCloseWait = false;
+        // if true, serialized leak trace will have a simplified representation
+        // for code object, which could be large and cause OOM during serualization
+        this.simplifyCodeSerialization = !Constant_1.default.isFB;
+        // when JSONify the leak trace for each node (object), we serialize at most
+        // the specified number of edges (references)
+        this.maxNumOfEdgesToJSONifyPerNode = 80;
+        // when JSONifying the leak trace, we serialize by invoking JSONifyNode up
+        // to the specified depth within the objects in the trace
+        this.maxLevelsOfTraceToJSONify = 4;
+        // HTML tags prioritized for display in MemLab's leak trace when showing
+        // DOM and detached DOM elements. If the representation is too long,
+        // lower-priority tags may be omitted.
+        this.defaultPrioritizedHTMLTagAttributes = new Set([
+            'id',
+            'role',
+            'type',
+            'data-testid',
+            'data-testids',
+            'name',
+            'class',
+        ]);
+    }
+    // initialize configurable parameters
+    init(options = {}) {
+        // if true dump extra debug info to terminal
+        this.verbose = false;
+        // dump the web console's output to terminal
+        this.dumpWebConsole = false;
+        // open dev-tools console when interacting with the page
+        this.openDevtoolsConsole = false;
+        // clear console, this may eliminate leaks retained by console
+        this.clearConsole = false;
+        // consider dev-tools console when search for leak trace
+        this.traverseDevToolsConsole = true;
+        // if true skip all warmup
+        this.skipWarmup = false;
+        // if true skip all snapshots
+        this.skipSnapshot = false;
+        // if true skip all screenshots
+        this.skipScreenshot = false;
+        // if true skip all scrolling
+        this.skipScroll = false;
+        // if true skip all extra operations on target and final
+        this.skipExtraOps = false;
+        // if true skip all GC
+        this.skipGC = false;
+        // true if running in ContinuousTest
+        this.isContinuousTest = false;
+        // true if reclustering is turned off
+        this.noReCluster = false;
+        // true if running a local test
+        this.isTest = false;
+        // true if running in local puppeteer mode
+        this.isLocalPuppeteer = false;
+        // true if pausing on every step
+        this.isManualDebug = false;
+        // number of warmup repeat in each browser tab instance
+        this.warmupRepeat = 2;
+        // by default, analyzing heap in main thread
+        this.isAnalyzingMainThread = true;
+        // target worker's title
+        this.targetWorkerTitle = null;
+        // if true, display leaked component outlines in headful browser
+        this.displayLeakOutlines = false;
+        // default waiting time when there is no page load checker callback
+        this.delayWhenNoPageLoadCheck = 2000;
+        // repeat the intermediate sequence
+        this.repeatIntermediateTabs = 1;
+        // the # of retries when interaction fails
+        this.interactionFailRetry = 1;
+        // the # of retries when initial load fails
+        this.initialLoadFailRetry = 2;
+        // timeout for checking the presence of non-optional click target
+        this.presenceCheckTimeout = 2 * 60 * 1000;
+        // default waiting time before exit when exception occurs during page interaction
+        this.delayBeforeExitUponException = 2 * 60 * 1000;
+        // Chrome window width
+        this.windowWidth = windowWidth;
+        // Chrome window height
+        this.windowHeight = windowHeight;
+        // disable all scroll
+        this.disableScroll = false;
+        // default number of scrolls on target page
+        this.scrollRepeat = 5;
+        // extra waiting time for the target page
+        this.extraWaitingForTarget = 0;
+        // extra waiting time for the final page
+        this.extraWaitingForFinal = 0;
+        // if a click operation does not setup a delay, use this delay after click
+        this.defaultAfterClickDelay = 2000;
+        // delay after garbage collection
+        this.waitAfterGC = 1400;
+        // delay after checking visual completion
+        this.waitAfterPageLoad = 500;
+        // delay after browser interaction
+        this.waitAfterOperation = 200;
+        // timeout for warmup page load (30 seconds)
+        this.warmupPageLoadTimeout = 30 * 1000;
+        // timeout for initial page load (10 minute)
+        this.initialPageLoadTimeout = 10 * 60 * 1000;
+        // extra delay after scrolling
+        this.waitAfterScrolling = 5000;
+        // extra delay after typing
+        this.waitAfterTyping = 1000;
+        // page load checker: default wait for network idle in scenario test
+        this.waitForNetworkInDefaultScenario = 10000;
+        // default repeat for stress testing
+        this.stressTestRepeat = 5;
+        // only show leaks with detached HTML elements
+        this.avoidLeakWithoutDetachedElements = false;
+        // if true, hide potential browser memory leak
+        this.hideBrowserLeak = true;
+        // recursively dump the key object of the WeakMap
+        this.chaseWeakMapEdge = true;
+        // consider outstanding Fiber nodes from target page as leaks
+        this.detectFiberNodeLeak = true;
+        // granted permissions to browser, so it won't ask by popping up dialog
+        this.grantedPermissions = [
+            'geolocation',
+            'camera',
+            'microphone',
+            'accelerometer',
+            'gyroscope',
+            'magnetometer',
+            'payment-handler',
+            'background-sync',
+        ];
+        // unbounded growth check only reports objects that are monotonic increasing
+        this.monotonicUnboundGrowthOnly = false;
+        // object size below the threshold won't be reported
+        this.unboundSizeThreshold = 10 * 1024;
+        // threshold for swtiching between fast store and slower store
+        // of NumericDictionary used by heap snapshot parser
+        this.heapParserDictFastStoreSize = 5000000;
+        // if true reset the GK list in visit synthesizer
+        this.resetGK = false;
+        // default userAgent, if undefined use puppeteer's default value
+        this.defaultUserAgent = Constant_1.default.defaultUserAgent;
+        // dump the heap node information in path summary (focuse mode)
+        this.dumpNodeInfo = false;
+        // the max steps when doing BFS search for shortest path
+        this.maxSearchSteps = Infinity;
+        // the max number of outgoing edges to be considered for a single node,
+        // when doing BFS search for shortest path
+        this.maxSearchReferences = Infinity;
+        // the set of nodes to expand one more level in the HTML report
+        this.nodeToShowMoreInfo = new Set();
+        // if true ignore DevTools console leak
+        this.ignoreDevToolsConsoleLeak = false;
+        // if true ignore InternalNode when searching for leak trace
+        this.ignoreInternalNode = false;
+        // node names excluded from the trace finding
+        this.nodeNameBlockList = new Set(['system / PropertyCell']);
+        // edge names excluded from the trace finding
+        this.edgeNameBlockList = new Set([
+            'feedback_cell',
+            'part of key -> value pair in ephemeron table',
+        ]);
+        // node names less preferable in trace finding
+        this.nodeNameGreyList = new Set([
+            'InternalNode',
+            'Pending activities',
+            'StyleEngine',
+            ...Constant_1.default.V8SyntheticRoots,
+        ]);
+        // edge names less preferable in trace finding
+        this.edgeNameGreyList = new Set(['alternate', 'firstEffect', 'lastEffect']);
+        // browser port for debugging
+        this.localBrowserPort = 57305;
+        // skip running the following test types in ContinuousTest
+        this.ignoreTypesInContinuousTest = new Set();
+        // skip running the following apps in ContinuousTest
+        this.ignoreAppsInContinuousTest = new Set();
+        // a threshold hold to prevent exceeding refer header size limit
+        this.URLParamLengthLimit = 400;
+        // a set of ignored edges when clustering object shapes
+        this.edgeIgnoreSetInShape = new Set(['__proto__', 'map']);
+        // a set of ignored nodes when clustering object shapes
+        this.nodeIgnoreSetInShape = new Set([
+            '(closure)',
+            '(array)',
+            '(number)',
+            '(system)',
+            'system / Context',
+            'system / Oddball',
+        ]);
+        // if true consider over sized objects as memory leak
+        this.oversizeObjectAsLeak = false;
+        // if larger than this threshold, consider as memory leak
+        this.oversizeThreshold = 0;
+        // when specified default, this mode will trace/diff all objects
+        // you can specified other modes (e.g., selected JS objects only)
+        this.traceAllObjectsMode = TraceObjectMode.Default;
+        // only report leak clusters with aggregated retained size
+        // bigger than this threshold
+        this.clusterRetainedSizeThreshold = 0;
+        // initialize file and directory paths
+        FileManager_1.default.initDirs(this, options);
+    }
+    getAdditionalConfigInContinuousTest(
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    _app, 
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    _interaction) {
+        return [];
+    }
+    // default config instance created from CLI
+    static getInstance() {
+        if (!MemLabConfig.instance) {
+            const config = new MemLabConfig();
+            // consider objects kept alive by timers as leaks
+            config.reportLeaksInTimers = true;
+            // assign configuration to console manager
+            Console_1.default.setConfig(config);
+            // set the singleton
+            MemLabConfig.instance = config;
+        }
+        return MemLabConfig.instance;
+    }
+    static resetConfigWithTransientDir() {
+        const config = MemLabConfig.getInstance();
+        FileManager_1.default.initDirs(config, { transient: true });
+        return config;
+    }
+    haltOrThrow(msg, 
+    // eslint-disable-next-line @typescript-eslint/no-empty-function
+    secondaryPrintCallback = () => { }) {
+        if (this.errorHandling === ErrorHandling.Halt) {
+            Console_1.default.error(msg);
+            secondaryPrintCallback();
+            process.exit(1);
+        }
+        else {
+            throw new Error(msg);
+        }
+    }
+    setTarget(app, tab) {
+        this.targetApp = app;
+        this.targetTab = tab;
+    }
+    set userDataDir(chromeUserDataDir) {
+        this._chromeUserDataDir = chromeUserDataDir;
+        if (this.puppeteerConfig != null) {
+            this.puppeteerConfig.userDataDir = chromeUserDataDir;
+        }
+    }
+    get userDataDir() {
+        return this._chromeUserDataDir;
+    }
+    set scenario(scenario) {
+        this._scenario = scenario;
+        if (scenario == null) {
+            return;
+        }
+        let hasCallback = false;
+        const externalFilter = {};
+        // set leak filter
+        const { leakFilter, beforeLeakFilter, retainerReferenceFilter } = scenario;
+        if (typeof leakFilter === 'function') {
+            hasCallback = true;
+            externalFilter.leakFilter = leakFilter;
+        }
+        // set leak filter init callback
+        if (typeof beforeLeakFilter === 'function') {
+            hasCallback = true;
+            externalFilter.beforeLeakFilter = beforeLeakFilter;
+        }
+        // set retainer reference filter callback
+        if (typeof retainerReferenceFilter === 'function') {
+            hasCallback = true;
+            externalFilter.retainerReferenceFilter = retainerReferenceFilter;
+        }
+        if (hasCallback) {
+            this.externalLeakFilter = externalFilter;
+        }
+    }
+    get scenario() {
+        return this._scenario;
+    }
+    set isFullRun(isFull) {
+        this._isFullRun = isFull;
+    }
+    get isFullRun() {
+        return this._isFullRun;
+    }
+    set browser(v) {
+        if (!Constant_1.default.supportedBrowsers[v]) {
+            this.haltOrThrow(`Invalid browser: ${v} ` +
+                `(supported browsers: ${Object.keys(Constant_1.default.supportedBrowsers).join(', ')})`);
+        }
+        this._browser = Constant_1.default.supportedBrowsers[v];
+        this.puppeteerConfig.executablePath = this.browserBinaryPath;
+        if (this.verbose) {
+            Console_1.default.lowLevel(`set browser: ${this.puppeteerConfig.executablePath}`);
+        }
+    }
+    get browser() {
+        return this._browser || 'google-chrome';
+    }
+    set isHeadfulBrowser(isHeadful) {
+        this._isHeadfulBrowser = isHeadful;
+        this.puppeteerConfig.headless = !isHeadful;
+        if (isHeadful) {
+            // if running in headful mode
+            this.disableXvfb();
+        }
+    }
+    get isHeadfulBrowser() {
+        return this._isHeadfulBrowser;
+    }
+    set disableWebSecurity(disable) {
+        this._disableWebSecurity = disable;
+        const args = this.puppeteerConfig.args;
+        const flag = '--disable-web-security';
+        const index = args.indexOf(flag);
+        if (disable) {
+            // add the flag
+            if (index < 0) {
+                args.push(flag);
+            }
+        }
+        else {
+            // remove the flag
+            if (index >= 0) {
+                args.splice(index, 1);
+            }
+        }
+    }
+    get disableWebSecurity() {
+        return this._disableWebSecurity;
+    }
+    get browserBinaryPath() {
+        return path_1.default.join(this.browserDir, this.browser);
+    }
+    // Default input option for file manager.
+    // If no other input option is provided, the file manager
+    // will generate directories and files based on this default option.
+    set defaultFileManagerOption(fileOption) {
+        FileManager_1.FileManager.defaultFileOption = fileOption;
+        // initialize file and directory paths
+        FileManager_1.default.initDirs(this, fileOption);
+    }
+    get defaultFileManagerOption() {
+        return FileManager_1.FileManager.defaultFileOption;
+    }
+    set reportLeaksInTimers(shouldReport) {
+        if (shouldReport) {
+            this.removeFromSet(this.nodeNameBlockList, this._timerNodes);
+            this.removeFromSet(this.edgeNameBlockList, this._timerEdges);
+        }
+        else {
+            this.addToSet(this.nodeNameBlockList, this._timerNodes);
+            this.addToSet(this.edgeNameBlockList, this._timerEdges);
+        }
+        this._reportLeaksInTimers = shouldReport;
+    }
+    get reportLeaksInTimers() {
+        return this._reportLeaksInTimers;
+    }
+    setDevice(deviceName, options = {}) {
+        if (!options.manualOverride && this._deviceManualOverridden) {
+            return;
+        }
+        this._deviceManualOverridden = !!options.manualOverride;
+        // set pc device
+        if (deviceName == null || deviceName === 'pc') {
+            this.emulateDevice = null;
+            this.defaultUserAgent = Constant_1.default.defaultUserAgent;
+            this.puppeteerConfig.defaultViewport = defaultViewport;
+            return;
+        }
+        // set mobile device
+        const name = deviceName.split('-').join(' ');
+        if (!devices[name]) {
+            const supportedDevices = Array.from(Object.keys(devices))
+                .filter(name => isNaN(parseInt(name, 10)))
+                .map(name => name.split(' ').join('-'));
+            this.haltOrThrow(`Invalid device: ${name}`, () => {
+                Console_1.default.lowLevel(`(supported devies: ${supportedDevices.join(', ')})`);
+            });
+        }
+        this.emulateDevice = devices[name];
+        this.puppeteerConfig.defaultViewport = null;
+        this.defaultUserAgent = null;
+    }
+    setRunInfo(key, value) {
+        this.extraRunInfoMap.set(key, value);
+    }
+    removeFromSet(set, list) {
+        for (const v of list) {
+            set.delete(v);
+        }
+    }
+    addToSet(set, list) {
+        for (const v of list) {
+            set.add(v);
+        }
+    }
+    enableXvfb(display) {
+        var _a;
+        this.useXVFB = true;
+        this.puppeteerConfig.devtools = true;
+        (_a = this.puppeteerConfig.args) === null || _a === void 0 ? void 0 : _a.push(`--display=${display}`);
+    }
+    disableXvfb() {
+        const args = [];
+        for (const arg of this.puppeteerConfig.args || []) {
+            if (!arg.startsWith('--display=')) {
+                args.push(arg);
+            }
+        }
+        this.puppeteerConfig.args = args;
+        this.puppeteerConfig.devtools = false;
+        this.useXVFB = false;
+    }
+}
+exports.MemLabConfig = MemLabConfig;
+/** @internal */
+const config = MemLabConfig.getInstance();
+(0, InternalValueSetter_1.setInternalValue)(config, __filename, Constant_1.default.internalDir);
+/** @internal */
+exports.default = config;
