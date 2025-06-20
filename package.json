@@ -35,6 +35,7 @@
     "dev": "tsc -b -w",
     "build": "npm run clean && npm run build-pkg --workspaces",
     "pub": "npm run publish-patch --workspaces",
+    "postinstall": "cd ./node_modules/memlab && npm install && npm run build",
     "clean": "npm run clean-pkg --workspaces && rm -rf ./website/build",
     "memlab": "node packages/cli/dist/runner.js",
     "test": "npm run test-pkg --workspaces --if-present",
